@@ -1,0 +1,157 @@
+import os
+from dotenv import load_dotenv
+
+from groq import Groq
+
+load_dotenv()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise EnvironmentError(
+        "GROQ_API_KEY not set. Get a free key at https://console.groq.com"
+    )
+
+client = Groq(api_key=GROQ_API_KEY)
+DEFAULT_MODEL = "llama-3.1-8b-instant"
+
+
+def _format_retrieved_chunks(chunks: list[dict]) -> str:
+    if not chunks:
+        return "No relevant reference material was retrieved for this query."
+
+    lines = []
+    for i, chunk in enumerate(chunks, 1):
+        source = chunk.get("source", "Unknown")
+        page = chunk.get("page", "?")
+        section = chunk.get("section_title", "")
+        text = chunk.get("text", "")
+        header = f"[{i}] Source: {source}, Page {page}"
+        if section:
+            header += f", Section: {section}"
+        lines.append(header)
+        lines.append(text)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_system_prompt(session_data: dict, retrieved_chunks: list[dict] = None) -> str:
+    date = session_data.get("date", "")
+    duration_seconds = session_data.get("duration_seconds", 0)
+    minutes = duration_seconds // 60
+    seconds = duration_seconds % 60
+    overall_form_score = session_data.get("overall_form_score_pct", 0)
+    total_exercises = session_data.get("total_exercises_detected", 0)
+    exercises = session_data.get("exercises", [])
+
+    lines = [
+        "You are a friendly fitness coaching assistant with access to three knowledge sources:",
+        "1. The user's current workout session data",
+        "2. Conditioning manual — exercise science, programming, and form guidance",
+        "3. Behaviour manual — psychology, habit building, and motivation",
+        "",
+        "=" * 40,
+        "SESSION DATA",
+        "=" * 40,
+        f"Date: {date}",
+        f"Duration: {minutes} min {seconds} sec",
+        f"Overall Form Score: {overall_form_score}%",
+        f"Total exercises detected: {total_exercises}",
+        "",
+        "Exercise breakdown:",
+    ]
+
+    for ex in exercises:
+        name = ex.get("name", "")
+        dur = ex.get("duration_seconds", 0)
+        form = ex.get("form_score_pct", 0)
+        conf = ex.get("avg_confidence", 0)
+        reps = ex.get("reps", 0)
+        lines.append(f"- {name}: {dur}s | Form: {form}% | Reps: {reps} | Confidence: {conf}")
+
+    lines.extend([
+        "",
+        "=" * 40,
+        "RETRIEVED KNOWLEDGE",
+        "=" * 40,
+        "",
+    ])
+
+    lines.append(_format_retrieved_chunks(retrieved_chunks or []))
+
+    lines.extend([
+        "",
+        "=" * 40,
+        "INSTRUCTIONS",
+        "=" * 40,
+        "- You are a fitness coaching assistant. You ONLY know what is written in the SESSION DATA and RETRIEVED KNOWLEDGE blocks above.",
+        "- You have NO general world knowledge. You do not know about sports, politics, news, celebrities, weather, history, science, or any topic outside fitness, exercise, conditioning, and behaviour.",
+        "- Open with a direct, committal answer to exactly what was asked, in the very first sentence: state the actual cause, fix, number, or range. NEVER hedge with vague filler like 'it depends', 'something further up the chain isn't working', or 'pay attention to your body' — give the specific answer the retrieved knowledge supports. Stay on topic; do NOT add unrequested session commentary, side tangents, or filler.",
+        "- When the user describes a symptom in their own words (e.g. 'losing my balance', 'leaning sideways', 'lopsided', 'feels like it comes from my lower back'), restate that exact symptom AND the exercise name in your opening clause before naming the underlying cause — e.g. 'When you lose your balance during the hurdle step, it's because your glute medius...'. Echo the user's own wording for the symptom; do not replace it with only the clinical/mechanism term.",
+        "- For 'what am I doing wrong', 'what is causing this', or 'how do I fix it' questions, always give BOTH the specific cause AND the specific fix in the same reply — never only one of them.",
+        "- Do NOT preface answers with meta-phrases like 'According to the retrieved knowledge', 'Based on the context provided', or 'The retrieved knowledge says'. Answer directly as a coach speaking to the user. (You still cite sources inline as instructed below.)",
+        "- If the question has several parts (e.g. 'sets AND reps', 'how often AND do I need rest days'), answer every part in one coherent reply. Answer the parts the retrieved knowledge covers and stop there — do NOT pad the reply with a list of sub-topics you could not find guidance for; only use the full refusal sentence below when NONE of the question is covered.",
+        "- If the question refers to several exercises (e.g. 'these exercises', 'my workout'), give the guidance for each exercise the retrieved knowledge covers, not just one of them.",
+        "- Ground every statement strictly in the RETRIEVED KNOWLEDGE above (or the SESSION DATA when the question is about the session). Do NOT add tips, cues, causes, or details that are not present in the retrieved text, even if you believe they are correct.",
+        "- Only bring in the session data when it is directly relevant to what the user asked.",
+        "- Always cite your sources when using retrieved knowledge: e.g., [Source: conditioning_manual.pdf, Page 42].",
+        "- If the user asks something that is NOT covered by the session data or retrieved knowledge, you MUST reply: 'I'm sorry, I can only answer questions about your workout and the fitness materials I have access to.'",
+        "- NEVER use your pre-trained knowledge to answer questions outside the provided sources.",
+        "- NEVER hallucinate facts, names, dates, or statistics, and do not fabricate numbers.",
+        "- Keep the answer concise and focused — typically 2 to 5 sentences — friendly and encouraging.",
+    ])
+
+    return "\n".join(lines)
+
+
+class ChatSession:
+    def __init__(self, session_data: dict, retrieval_engine=None, model: str = DEFAULT_MODEL):
+        self.session_data = session_data
+        self.retrieval_engine = retrieval_engine
+        self.model = model
+        self.history = []
+
+    def chat(self, user_message: str) -> str:
+        if not user_message or not user_message.strip():
+            return "Please ask me something about your session or fitness in general."
+
+        # Retrieve relevant knowledge for this query
+        retrieved_chunks = []
+        if self.retrieval_engine is not None:
+            try:
+                retrieved_chunks = self.retrieval_engine.search(user_message.strip(), top_k=6)
+            except Exception as e:
+                print(f"[Retrieval ERROR] {type(e).__name__}: {e}")
+                # Continue without retrieved knowledge rather than failing entirely
+
+        system_prompt = build_system_prompt(self.session_data, retrieved_chunks)
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+        ]
+
+        # Rebuild message history in Groq/OpenAI format
+        for turn in self.history:
+            role = turn["role"]
+            # Groq uses "assistant" not "model"
+            if role == "model":
+                role = "assistant"
+            messages.append({"role": role, "content": turn["parts"][0]})
+
+        messages.append({"role": "user", "content": user_message.strip()})
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=512,
+                temperature=0.7,
+            )
+            reply = response.choices[0].message.content
+        except Exception as e:
+            print(f"[LLM ERROR] {type(e).__name__}: {e}")
+            return "Sorry, I couldn't reach the AI service. Check your internet connection."
+
+        # Store history in internal format ("user" / "model")
+        self.history.append({"role": "user", "parts": [user_message.strip()]})
+        self.history.append({"role": "model", "parts": [reply]})
+        return reply

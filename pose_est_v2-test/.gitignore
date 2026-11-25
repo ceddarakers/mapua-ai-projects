@@ -1,0 +1,60 @@
+# ── Python ──
+__pycache__/
+*.pyc
+
+# ── Environment ──
+*.env
+venv/
+.venv/
+.venv-tf/
+env/
+ENV/
+
+# ── Logs / Temp ──
+logs/
+/tmp/*.mp3
+
+# ── Data / Datasets (too large, generated locally) ──
+data/**
+!data/knowledge_base.json
+!data/embeddings.npy
+!data/chunks.jsonl
+!data/embedding_model/
+!data/embedding_model/**
+UI-PRMD/
+Penn_Action/
+
+# ── Eval: scripts tracked, media data ignored ──
+eval/TEST/
+eval/results/
+eval/train_videos_flat/
+!eval/*.py
+trained_videos/
+
+# ── Colab notebooks contain live tokens/API keys, never commit ──
+eval/colab_ollama_setup.ipynb
+eval/colab_inprocess_eval.ipynb
+
+# ── Data collection checklists ──
+data_collection/
+
+# ── Source PDF references (knowledge base is pre-built) ──
+references/
+
+# ── Large model artifacts (.task is auto-downloaded) ──
+models/*.keras
+models/*.task
+
+# ── Data collection checklist (internal team doc) ──
+DATA_COLLECTION_CHECKLIST.md
+
+# ── Debug / Smoke test ──
+smoke_test_chat.py
+smoke_test_qr.png
+
+# ── System / IDE ──
+.DS_Store
+.python-version
+.pytest_cache/
+.zshrc
+.bashrc
